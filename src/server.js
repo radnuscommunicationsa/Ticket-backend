@@ -17,7 +17,10 @@ connectDB();
 
 // ✅ CORS FIX (VERY IMPORTANT)
 app.use(cors({
-  origin: "http://localhost:3000",
+  origin: [
+    'http://localhost:3000',
+    'https://ticket-frontend-alpha.vercel.app'
+  ],
   credentials: true
 }));
 
