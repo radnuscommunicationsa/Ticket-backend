@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const Asset = require('../models/Asset');
-const Employee = require('../models/Employee');
+const Employee = require('../models/User');
 
 // ✅ GET all assets
 router.get('/', async (req, res) => {
