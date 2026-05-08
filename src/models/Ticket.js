@@ -53,7 +53,7 @@ const ticketSchema = new mongoose.Schema(
 
     contact_pref: {
       type: String,
-      enum: ['Email', 'Phone', 'Slack'],
+      enum: ['Email', 'Phone', 'Slack', 'In-Person'],
       default: 'Email',
     },
 
