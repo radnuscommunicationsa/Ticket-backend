@@ -360,4 +360,99 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
+const Notification = require('../models/Notification');
+
+// ======================================
+// POST /tickets
+// ======================================
+router.post('/', auth, async (req, res) => {
+  try {
+    const {
+      category,
+      priority,
+      subject,
+      description,
+      asset,
+      contact_pref
+    } = req.body;
+
+    const ticket_no = `TKT-${Date.now()}`;
+
+    const ticket = new Ticket({
+      ticket_no,
+      category,
+      priority,
+      subject,
+      description,
+      asset,
+      contact_pref,
+      created_by: req.user.id,
+      status: 'open'
+    });
+
+    await ticket.save();
+
+    // ✅ NOTIFY ADMIN
+    await Notification.create({
+      message: `New ticket raised: ${subject} (${priority} priority)`,
+      type: 'ticket_created',
+      role: 'admin',
+      ticket_id: ticket._id,
+      user_id: req.user.id,
+    });
+
+    // ✅ NOTIFY EMPLOYEE
+    await Notification.create({
+      message: `Your ticket "${subject}" has been submitted successfully`,
+      type: 'ticket_created',
+      role: 'employee',
+      ticket_id: ticket._id,
+      user_id: req.user.id,
+    });
+
+    res.json({
+      success: true,
+      ticket_no: ticket.ticket_no,
+      ticket
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ======================================
+// UPDATE TICKET
+// ======================================
+router.patch('/:id', auth, async (req, res) => {
+  try {
+    const ticket = await Ticket.findByIdAndUpdate(
+      req.params.id,
+      { $set: req.body },
+      { new: true }
+    );
+
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+
+    // ✅ NOTIFY EMPLOYEE when status changes
+    if (req.body.status) {
+      await Notification.create({
+        message: `Your ticket "${ticket.subject}" status changed to ${req.body.status}`,
+        type: 'ticket_updated',
+        role: 'employee',
+        ticket_id: ticket._id,
+        user_id: ticket.created_by,
+      });
+    }
+
+    res.json({ success: true, ticket });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
