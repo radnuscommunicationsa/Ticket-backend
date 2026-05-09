@@ -167,7 +167,7 @@ router.get('/my-tickets', auth, async (req, res) => {
 // ======================================
 // GET /tickets
 // ======================================
-router.get('/', auth, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
 
     const tickets = await Ticket.find()
