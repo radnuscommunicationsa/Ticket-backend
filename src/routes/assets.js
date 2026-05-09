@@ -2,6 +2,8 @@ const router = require('express').Router();
 const Asset = require('../models/Asset');
 const Employee = require('../models/User');
 const jwt = require('jsonwebtoken');
+const auth = require('../middleware/auth');
+
 
 // ✅ MY ASSETS - must be before /:id
 router.get('/my-assets', async (req, res) => {
