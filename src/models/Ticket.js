@@ -73,6 +73,17 @@ const ticketSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    // ✅ ADD THIS
+logs: [
+  {
+    status: { type: String },
+    note:   { type: String },
+    date:   { type: Date, default: Date.now },
+    by:     { type: String }
+  }
+],
+
   },
   {
     timestamps: true,
