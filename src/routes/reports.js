@@ -2,6 +2,8 @@ const router = require('express').Router();
 const Ticket = require('../models/Ticket');
 const User = require('../models/User');
 const Asset = require('../models/Asset');
+const auth = require('../middleware/auth');
+const isAdmin = require('../middleware/isAdmin');
 
 router.get('/', async (req, res) => {
   try {

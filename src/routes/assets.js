@@ -3,7 +3,7 @@ const Asset = require('../models/Asset');
 const Employee = require('../models/User');
 const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
-
+const isAdmin = require('../middleware/isAdmin');
 
 // ✅ MY ASSETS - must be before /:id
 router.get('/my-assets', async (req, res) => {

@@ -3,6 +3,7 @@ const Ticket = require('../models/Ticket');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 const auth = require('../middleware/auth');
+const isAdmin = require('../middleware/isAdmin');
 
 // ======================================
 // GET /tickets/stats
@@ -165,6 +166,13 @@ router.get('/:id', auth, async (req, res) => {
   try {
     const ticket = await Ticket.findById(req.params.id).lean();
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    const isOwner = ticket.created_by?.toString() === req.user.id;
+    const isPrivileged = req.user.role === 'admin' || req.user.role === 'system_admin';
+    if (!isOwner && !isPrivileged) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const user = await User.findById(ticket.created_by).lean();
     res.json({
       ...ticket, id: ticket._id,

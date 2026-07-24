@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const User = require('../models/User');
-
+const auth = require('../middleware/auth');
+const isAdmin = require('../middleware/isAdmin');
 // ✅ GET all employees and admins
 router.get('/', async (req, res) => {
   try {
