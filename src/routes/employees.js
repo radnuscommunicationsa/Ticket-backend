@@ -20,8 +20,9 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { name, emp_id, email, password, department, phone, role } = req.body;
-    if (!name || !emp_id || !email || !password)
-      return res.status(400).json({ error: 'Name, ID, email and password are required' });
+    if (!name || !emp_id || !password) {
+  return res.status(400).json({ error: 'Name, ID and password are required' });
+}
 
     const existing = await User.findOne({ $or: [{ email }, { emp_id }] });
     if (existing)
