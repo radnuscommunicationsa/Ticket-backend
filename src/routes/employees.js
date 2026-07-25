@@ -25,9 +25,14 @@ router.post('/', async (req, res) => {
   return res.status(400).json({ error: 'Name, ID and password are required' });
 }
 
-    const existing = await User.findOne({ $or: [{ email }, { emp_id }] });
-    if (existing)
-      return res.status(400).json({ error: 'Email or Employee ID already exists' });
+    const query = [{ emp_id }];
+if (email && email.trim() !== '') {
+  query.push({ email });
+}
+const existing = await User.findOne({ $or: query });
+if (existing) {
+  return res.status(400).json({ error: 'Employee ID already exists' });
+}
 
     const user = new User({
       name,
