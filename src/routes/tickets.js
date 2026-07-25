@@ -97,12 +97,13 @@ router.get('/', async (req, res) => {
     const users = await User.find({ _id: { $in: userIds } }).lean();
     const userMap = {};
     users.forEach(u => { userMap[u._id.toString()] = u; });
-    const mapped = tickets.map(t => {
+    
+  const mapped = tickets.map(t => {
   const u = userMap[t.created_by?.toString()];
   return {
     ...t, id: t._id,
     emp_name: u?.name || 'Unknown',
-    emp_email: u?.email || '',
+    emp_code: u?.emp_id || '',
     department: u?.department || 'N/A',
     created_at: t.createdAt
   };
