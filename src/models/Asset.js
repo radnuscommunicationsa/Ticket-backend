@@ -6,10 +6,15 @@ const AssetSchema = new mongoose.Schema({
   brand: String,
   model: String,
   category: String,
+  serial_no: String,
+  purchase_date: Date,
+  warranty_until: Date,
+  location: String,
+  notes: String,
   status: { type: String, default: 'Available' },
   assigned_to: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',        // ✅ Fixed
+    ref: 'User',
     default: null
   },
   assigned_to_name: String,
