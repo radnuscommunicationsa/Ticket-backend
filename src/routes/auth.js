@@ -22,7 +22,7 @@ router.post('/login', async (req, res) => {
     const { login, password } = req.body;
     if (!login || !password)
       return res.status(400).json({ error: 'Login and password required' });
-    const user = await User.findOne({ $or: [{ email: login }, { emp_id: login }] });
+    const user = await User.findOne({ emp_id: login });
     if (!user) return res.status(401).json({ error: 'User not found' });
     if (password !== user.password) return res.status(401).json({ error: 'Wrong password' });
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });

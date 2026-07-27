@@ -55,4 +55,25 @@ router.patch('/read', auth, async (req, res) => {
   }
 });
 
+// ======================================
+// DELETE /notifications/clear — clear all my notifications
+// ======================================
+router.delete('/clear', auth, async (req, res) => {
+  try {
+    const { role, id } = req.user;
+
+    await Notification.deleteMany({
+      $or: [
+        { role: 'all' },
+        { role: role },
+        { user_id: id },
+      ],
+    });
+
+    res.json({ success: true, message: 'All notifications cleared' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
