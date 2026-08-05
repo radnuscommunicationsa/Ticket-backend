@@ -74,7 +74,7 @@ const ticketSchema = new mongoose.Schema(
       default: null,
     },
 
-    // ✅ ADD THIS
+   // ✅ ADD THIS
 logs: [
   {
     status: { type: String },
@@ -84,7 +84,19 @@ logs: [
   }
 ],
 
+    // ✅ NEW - Comments thread
+    comments: [
+      {
+        message:      { type: String, required: true },
+        by:           { type: String },
+        by_id:        { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        by_role:      { type: String, enum: ['admin', 'employee'], default: 'employee' },
+        created_at:   { type: Date, default: Date.now }
+      }
+    ],
+
   },
+
   {
     timestamps: true,
     strictPopulate: false, // ✅ Added

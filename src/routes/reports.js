@@ -21,7 +21,7 @@ router.get('/', async (req, res) => {
     const [total, open_c, inprog, resolved, closed] = await Promise.all([
       Ticket.countDocuments({ createdAt: { $gte: start, $lt: end } }),
       Ticket.countDocuments({ createdAt: { $gte: start, $lt: end }, status: 'open' }),
-      Ticket.countDocuments({ createdAt: { $gte: start, $lt: end }, status: 'in_progress' }),
+      Ticket.countDocuments({ createdAt: { $gte: start, $lt: end }, status: 'in-progress' }),
       Ticket.countDocuments({ createdAt: { $gte: start, $lt: end }, status: 'resolved' }),
       Ticket.countDocuments({ createdAt: { $gte: start, $lt: end }, status: 'closed' }),
     ]);
@@ -32,9 +32,9 @@ router.get('/', async (req, res) => {
     const empData = await Promise.all(
       employees.map(async (u) => {
         const [empTotal, empOpen, empResolved] = await Promise.all([
-          Ticket.countDocuments({ assigned_to: u._id, createdAt: { $gte: start, $lt: end } }),
-          Ticket.countDocuments({ assigned_to: u._id, createdAt: { $gte: start, $lt: end }, status: 'open' }),
-          Ticket.countDocuments({ assigned_to: u._id, createdAt: { $gte: start, $lt: end }, status: 'resolved' }),
+          Ticket.countDocuments({ created_by: u._id, createdAt: { $gte: start, $lt: end } }),
+          Ticket.countDocuments({ created_by: u._id, createdAt: { $gte: start, $lt: end }, status: 'open' }),
+          Ticket.countDocuments({ created_by: u._id, createdAt: { $gte: start, $lt: end }, status: 'resolved' }),
         ]);
         return {
           name:       u.name,
@@ -49,8 +49,8 @@ router.get('/', async (req, res) => {
     // ── Asset Overview ────────────────────────────────────────────
     const [assetTotal, assetAvailable, assetAssigned] = await Promise.all([
       Asset.countDocuments({}),
-      Asset.countDocuments({ status: 'available' }),
-      Asset.countDocuments({ status: 'assigned' }),
+      Asset.countDocuments({ status: 'Available' }),
+      Asset.countDocuments({ status: 'Assigned' }),
     ]);
 
     res.json({

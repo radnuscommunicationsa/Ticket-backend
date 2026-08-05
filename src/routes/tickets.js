@@ -185,7 +185,8 @@ router.get('/:id', auth, async (req, res) => {
       phone: user?.phone || '',
       created_at: ticket.createdAt,
       updated_at: ticket.updatedAt,
-      logs: ticket.logs || []   // ✅ hardcode [] instead of ticket.logs போட்டிருந்தோம் — இப்போ fix
+      logs: ticket.logs || [],
+      comments: ticket.comments || []   // ✅ NEW
     });
   } catch (err) {
     console.log(err);
@@ -237,6 +238,66 @@ router.patch('/:id', auth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ======================================
+// ADD COMMENT TO TICKET
+// ======================================
+router.post('/:id/comment', auth, async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'Comment message is required' });
+    }
+
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    // Access check - only owner or admin can comment
+    const isOwner = ticket.created_by?.toString() === req.user.id;
+    const isPrivileged = req.user.role === 'admin' || req.user.role === 'system_admin';
+    if (!isOwner && !isPrivileged) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const comment = {
+      message: message.trim(),
+      by: req.user.name || (isPrivileged ? 'IT Support' : 'Employee'),
+      by_id: req.user.id,
+      by_role: isPrivileged ? 'admin' : 'employee',
+      created_at: new Date()
+    };
+
+    ticket.comments.push(comment);
+    await ticket.save();
+
+    // Notify the other party
+    if (isPrivileged) {
+      // Admin commented -> notify employee
+      await Notification.create({
+        message: `New reply on your ticket "${ticket.subject}"`,
+        type: 'ticket_updated',
+        role: 'employee',
+        ticket_id: ticket._id,
+        user_id: ticket.created_by,
+      });
+    } else {
+      // Employee commented -> notify admin
+      await Notification.create({
+        message: `New reply on ticket "${ticket.subject}"`,
+        type: 'ticket_updated',
+        role: 'admin',
+        ticket_id: ticket._id,
+        user_id: req.user.id,
+      });
+    }
+
+    res.json({ success: true, comment, comments: ticket.comments });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ======================================
 // DELETE TICKET
 // ======================================

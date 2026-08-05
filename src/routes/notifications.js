@@ -9,13 +9,25 @@ router.get('/', auth, async (req, res) => {
   try {
     const { role, id } = req.user;
 
-    const query = {
-      $or: [
-        { role: 'all' },
-        { role: role },
-        { user_id: id },
-      ],
-    };
+    let query;
+    if (role === 'admin' || role === 'system_admin') {
+      // Admin: ella admin notifications um paakalam (broadcast), plus personal ones
+      query = {
+        $or: [
+          { role: 'all' },
+          { role: 'admin' },
+          { user_id: id },
+        ],
+      };
+    } else {
+      // Employee: only their own notifications, plus broadcast
+      query = {
+        $or: [
+          { role: 'all' },
+          { user_id: id },
+        ],
+      };
+    }
 
     const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
@@ -37,17 +49,26 @@ router.patch('/read', auth, async (req, res) => {
   try {
     const { role, id } = req.user;
 
-    await Notification.updateMany(
-      {
+    let query;
+    if (role === 'admin' || role === 'system_admin') {
+      query = {
         $or: [
           { role: 'all' },
-          { role: role },
+          { role: 'admin' },
           { user_id: id },
         ],
-        is_read: false,
-      },
-      { $set: { is_read: true } }
-    );
+      };
+    } else {
+      query = {
+        $or: [
+          { role: 'all' },
+          { user_id: id },
+        ],
+      };
+    }
+    query.is_read = false;
+
+    await Notification.updateMany(query, { $set: { is_read: true } });
 
     res.json({ success: true, message: 'Marked as read' });
   } catch (err) {
