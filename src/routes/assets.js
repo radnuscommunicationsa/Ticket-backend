@@ -5,6 +5,43 @@ const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
 const isAdmin = require('../middleware/isAdmin');
 
+// ✅ FIND & REPLACE Asset Category
+router.patch('/find-replace', async (req, res) => {
+  try {
+    const { find, replace } = req.body;
+
+    if (!find || !replace) {
+      return res.status(400).json({
+        error: 'Find and Replace values are required'
+      });
+    }
+
+    const assets = await Asset.find({
+      category: { $regex: `^${find}$`, $options: 'i' }
+    });
+
+    let updated = 0;
+
+    for (const asset of assets) {
+      asset.category = replace;
+      await asset.save();
+      updated++;
+    }
+
+    res.json({
+      success: true,
+      message: `${updated} asset(s) updated: category changed from "${find}" to "${replace}"`
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+
 // ✅ MY ASSETS - must be before /:id
 router.get('/my-assets', async (req, res) => {
   try {

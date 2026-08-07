@@ -84,7 +84,7 @@ logs: [
   }
 ],
 
-    // ✅ NEW - Comments thread
+  // ✅ NEW - Comments thread
     comments: [
       {
         message:      { type: String, required: true },
@@ -94,6 +94,13 @@ logs: [
         created_at:   { type: Date, default: Date.now }
       }
     ],
+
+    // ✅ NEW - Employee feedback after resolution
+    feedback: {
+      rating:      { type: Number, min: 1, max: 5, default: null },
+      comment:     { type: String, default: '' },
+      submitted_at:{ type: Date, default: null }
+    },
 
   },
 
@@ -111,5 +118,7 @@ ticketSchema.pre('save', async function (next) {
   }
   next();
 });
+
+
 
 module.exports = mongoose.model('Ticket', ticketSchema);

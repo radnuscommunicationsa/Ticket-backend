@@ -312,4 +312,177 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
+router.post('/:id/feedback', auth, async (req, res) => {
+  try {
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    const ticket = await Ticket.findById(req.params.id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+
+    if (ticket.created_by.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!['resolved', 'closed'].includes(ticket.status)) {
+      return res.status(400).json({
+        error: 'Feedback can only be submitted after resolution'
+      });
+    }
+
+    ticket.feedback = {
+      rating,
+      comment: comment?.trim() || '',
+      submitted_at: new Date()
+    };
+
+    await ticket.save();
+
+    res.json({
+      success: true,
+      feedback: ticket.feedback
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /tickets — Admin All Tickets
+router.get('/', async (req, res) => {
+  try {
+    const tickets = await Ticket.find().sort({ createdAt: -1 }).lean();
+    const userIds = tickets.map(t => t.created_by).filter(Boolean);
+    const users = await User.find({ _id: { $in: userIds } }).lean();
+    const userMap = {};
+    users.forEach(u => { userMap[u._id.toString()] = u; });
+
+    const mapped = tickets.map(t => {
+      const u = userMap[t.created_by?.toString()];
+      const hasFeedback = t.feedback && t.feedback.submitted_at != null;
+      return {
+        ...t, id: t._id,
+        emp_name: u?.name || 'Unknown',
+        emp_code: u?.emp_id || '',
+        department: u?.department || 'N/A',
+        created_at: t.createdAt,
+        // ✅ FEEDBACK FIELDS
+        has_feedback: hasFeedback,
+        feedback_rating: hasFeedback ? t.feedback.rating : null,
+        feedback_comment: hasFeedback ? t.feedback.comment : ''
+      };
+    });
+    res.json(mapped);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/stats', auth, async (req, res) => {
+  try {
+    const [total, open, critical, in_progress, resolved, closed, recent, feedbackAgg] = await Promise.all([
+      Ticket.countDocuments(),
+      Ticket.countDocuments({ status: 'open' }),
+      Ticket.countDocuments({ status: 'open', priority: 'critical' }),
+      Ticket.countDocuments({ status: 'in-progress' }),
+      Ticket.countDocuments({ status: 'resolved' }),
+      Ticket.countDocuments({ status: 'closed' }),
+      Ticket.find().sort({ createdAt: -1 }).limit(5).lean(),
+      // ✅ FEEDBACK AGGREGATION
+      Ticket.aggregate([
+        { $match: { 'feedback.submitted_at': { $ne: null } } },
+        { $group: { _id: null, count: { $sum: 1 }, avg: { $avg: '$feedback.rating' } } }
+      ])
+    ]);
+
+    const userIds = recent.map(t => t.created_by).filter(Boolean);
+    const users = await User.find({ _id: { $in: userIds } }).lean();
+    const userMap = {};
+    users.forEach(u => { userMap[u._id.toString()] = u; });
+
+    const recent_tickets = recent.map(t => {
+      const u = userMap[t.created_by?.toString()];
+      return {
+        _id: t._id, id: t._id,
+        ticket_no: t.ticket_no,
+        subject: t.subject,
+        priority: t.priority,
+        status: t.status,
+        category: t.category,
+        emp_name: u?.name || 'Unknown',
+        department: u?.department || 'N/A',
+        created_at: t.createdAt
+      };
+    });
+
+    // ✅ EXTRACT FEEDBACK STATS
+    const feedbackStats = feedbackAgg[0] || { count: 0, avg: 0 };
+
+    res.json({
+      total, open, critical, in_progress, resolved, closed, recent_tickets, recent_activity: [],
+      // ✅ NEW
+      feedback_count: feedbackStats.count,
+      avg_rating: parseFloat(feedbackStats.avg.toFixed(1))
+    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ======================================
+// GET ALL FEEDBACK (admin only)
+// ======================================
+router.get('/feedback/all', auth, async (req, res) => {
+  try {
+    const tickets = await Ticket.find({ 'feedback.rating': { $ne: null } })
+      .sort({ 'feedback.submitted_at': -1 })
+      .lean();
+
+    const userIds = tickets.map(t => t.created_by).filter(Boolean);
+    const users = await User.find({ _id: { $in: userIds } }).lean();
+    const userMap = {};
+    users.forEach(u => { userMap[u._id.toString()] = u; });
+
+    const feedbackList = tickets.map(t => {
+      const u = userMap[t.created_by?.toString()];
+      return {
+        ticket_id: t._id,
+        ticket_no: t.ticket_no,
+        subject: t.subject,
+        emp_name: u?.name || 'Unknown',
+        department: u?.department || 'N/A',
+        rating: t.feedback.rating,
+        comment: t.feedback.comment,
+        submitted_at: t.feedback.submitted_at
+      };
+    });
+
+    const totalReviews = feedbackList.length;
+    const avgRating = totalReviews > 0
+      ? (feedbackList.reduce((sum, f) => sum + f.rating, 0) / totalReviews).toFixed(1)
+      : 0;
+
+    const distribution = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    feedbackList.forEach(f => { distribution[f.rating] = (distribution[f.rating] || 0) + 1; });
+
+    res.json({
+      feedbackList,
+      totalReviews,
+      avgRating: Number(avgRating),
+      distribution
+    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
