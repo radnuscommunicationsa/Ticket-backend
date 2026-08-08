@@ -42,17 +42,30 @@ router.patch('/find-replace', async (req, res) => {
 });
 
 
-// ✅ MY ASSETS - must be before /:id
 router.get('/my-assets', async (req, res) => {
   try {
     const header = req.headers.authorization;
     if (!header) return res.status(401).json({ error: 'No token' });
     const token = header.split(' ')[1];
-    const user = jwt.verify(token, 'secret');
-    const assets = await Asset.find({ assigned_to: user.id }).lean();
-    res.json(assets);
+    const decoded = jwt.verify(token, 'secret');
+    
+    // ✅ Find user by ANY token field, then use DB _id
+    const user = await Employee.findOne({
+      $or: [
+        { _id: decoded._id || decoded.id },
+        { emp_id: decoded.emp_id || decoded.id },
+        { name: decoded.name }
+      ]
+    });
+    
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    const isAdmin = user.role === 'admin' || user.role === 'system_admin';
+    const filter = isAdmin ? {} : { assigned_to: user._id };
+    const assets = await Asset.find(filter).lean();
+    
+    res.json({ assets });
   } catch (err) {
-    console.error('MY ASSETS ERROR:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
