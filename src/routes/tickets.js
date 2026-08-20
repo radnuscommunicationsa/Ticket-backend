@@ -10,14 +10,18 @@ const isAdmin = require('../middleware/isAdmin');
 // ======================================
 router.get('/stats', auth, async (req, res) => {
   try {
-    const [total, open, critical, in_progress, resolved, closed, recent] = await Promise.all([
+    const [total, open, critical, in_progress, resolved, closed, recent, feedbackAgg] = await Promise.all([
       Ticket.countDocuments(),
       Ticket.countDocuments({ status: 'open' }),
       Ticket.countDocuments({ status: 'open', priority: 'critical' }),
       Ticket.countDocuments({ status: 'in-progress' }),
       Ticket.countDocuments({ status: 'resolved' }),
       Ticket.countDocuments({ status: 'closed' }),
-      Ticket.find().sort({ createdAt: -1 }).limit(5).lean()
+      Ticket.find().sort({ createdAt: -1 }).limit(5).lean(),
+      Ticket.aggregate([
+        { $match: { 'feedback.submitted_at': { $ne: null } } },
+        { $group: { _id: null, count: { $sum: 1 }, avg: { $avg: '$feedback.rating' } } }
+      ])
     ]);
 
     const userIds = recent.map(t => t.created_by).filter(Boolean);
@@ -36,11 +40,18 @@ router.get('/stats', auth, async (req, res) => {
         category: t.category,
         emp_name: u?.name || 'Unknown',
         department: u?.department || 'N/A',
-        created_at: t.createdAt
+        created_at: t.createdAt,
+        source: t.source || 'web'
       };
     });
 
-    res.json({ total, open, critical, in_progress, resolved, closed, recent_tickets, recent_activity: [] });
+    const feedbackStats = feedbackAgg[0] || { count: 0, avg: 0 };
+
+    res.json({
+      total, open, critical, in_progress, resolved, closed, recent_tickets, recent_activity: [],
+      feedback_count: feedbackStats.count,
+      avg_rating: parseFloat((feedbackStats.avg || 0).toFixed(1))
+    });
   } catch (err) {
     console.log(err);
     res.status(500).json({ error: err.message });
@@ -78,7 +89,8 @@ router.get('/my-tickets', auth, async (req, res) => {
       ...t, id: t._id,
       emp_name: user?.name || 'Unknown',
       department: user?.department || 'N/A',
-      created_at: t.createdAt
+      created_at: t.createdAt,
+      source: t.source || 'web'
     }));
     res.json(mapped);
   } catch (err) {
@@ -88,26 +100,37 @@ router.get('/my-tickets', auth, async (req, res) => {
 });
 
 // ======================================
-// GET /tickets
+// GET /tickets — Admin All Tickets
 // ======================================
 router.get('/', async (req, res) => {
   try {
     const tickets = await Ticket.find().sort({ createdAt: -1 }).lean();
     const userIds = tickets.map(t => t.created_by).filter(Boolean);
-    const users = await User.find({ _id: { $in: userIds } }).lean();
+    const adminIds = tickets.map(t => t.raised_by_admin).filter(Boolean);
+    const allIds = [...userIds, ...adminIds];
+
+    const users = await User.find({ _id: { $in: allIds } }).lean();
     const userMap = {};
     users.forEach(u => { userMap[u._id.toString()] = u; });
-    
-  const mapped = tickets.map(t => {
-  const u = userMap[t.created_by?.toString()];
-  return {
-    ...t, id: t._id,
-    emp_name: u?.name || 'Unknown',
-    emp_code: u?.emp_id || '',
-    department: u?.department || 'N/A',
-    created_at: t.createdAt
-  };
-});
+
+    const mapped = tickets.map(t => {
+      const u = userMap[t.created_by?.toString()];
+      const raisedByAdminUser = t.raised_by_admin ? userMap[t.raised_by_admin.toString()] : null;
+      const hasFeedback = t.feedback && t.feedback.submitted_at != null;
+
+      return {
+        ...t, id: t._id,
+        emp_name: u?.name || 'Unknown',
+        emp_code: u?.emp_id || '',
+        department: u?.department || 'N/A',
+        created_at: t.createdAt,
+        source: t.source || 'web',
+        raised_by_admin_name: raisedByAdminUser?.name || null,
+        has_feedback: hasFeedback,
+        feedback_rating: hasFeedback ? t.feedback.rating : null,
+        feedback_comment: hasFeedback ? t.feedback.comment : ''
+      };
+    });
     res.json(mapped);
   } catch (err) {
     console.log(err);
@@ -117,38 +140,59 @@ router.get('/', async (req, res) => {
 
 // ======================================
 // POST /tickets ✅ ONLY ONE
+// Supports:
+//  - Normal self-raise (employee raises for themselves)
+//  - Admin raising a ticket on behalf of an employee (phone/walk-in/email)
 // ======================================
 router.post('/', auth, async (req, res) => {
   try {
-    const { category, priority, subject, description, asset, contact_pref } = req.body;
+    const {
+      category, priority, subject, description, asset, contact_pref,
+      source, employee_id
+    } = req.body;
 
     const ticket_no = `TKT-${Date.now()}`;
+
+    const isAdminUser = req.user.role === 'admin' || req.user.role === 'system_admin';
+
+    // Default: ticket belongs to whoever is logged in
+    let created_by = req.user.id;
+    let raised_by_admin = null;
+
+    // If an admin selected an employee from the dropdown, the ticket belongs
+    // to THAT employee instead, and we record which admin raised it.
+    if (isAdminUser && employee_id) {
+      created_by = employee_id;
+      raised_by_admin = req.user.id;
+    }
 
     const ticket = new Ticket({
       ticket_no, category, priority, subject,
       description, asset, contact_pref,
-      created_by: req.user.id,
+      source: source || 'web',
+      created_by,
+      raised_by_admin,
       status: 'open'
     });
 
     await ticket.save();
 
-    // ✅ Notify admin
+    // Notify admin
     await Notification.create({
       message: `New ticket ${ticket_no} raised: "${subject}" (${priority} priority)`,
       type: 'ticket_created',
       role: 'admin',
       ticket_id: ticket._id,
-      user_id: req.user.id,
+      user_id: created_by,
     });
 
-    // ✅ Notify employee
+    // Notify the employee the ticket belongs to
     await Notification.create({
       message: `Your ticket "${subject}" has been submitted successfully.`,
       type: 'ticket_created',
       role: 'employee',
       ticket_id: ticket._id,
-      user_id: req.user.id,
+      user_id: created_by,
     });
 
     res.json({ success: true, ticket_no: ticket.ticket_no, ticket });
@@ -158,9 +202,6 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// ======================================
-// GET SINGLE TICKET
-// ======================================
 // ======================================
 // GET SINGLE TICKET
 // ======================================
@@ -176,6 +217,10 @@ router.get('/:id', auth, async (req, res) => {
     }
 
     const user = await User.findById(ticket.created_by).lean();
+    const raisedByAdminUser = ticket.raised_by_admin
+      ? await User.findById(ticket.raised_by_admin).lean()
+      : null;
+
     res.json({
       ...ticket, id: ticket._id,
       emp_name: user?.name || 'Unknown',
@@ -186,7 +231,9 @@ router.get('/:id', auth, async (req, res) => {
       created_at: ticket.createdAt,
       updated_at: ticket.updatedAt,
       logs: ticket.logs || [],
-      comments: ticket.comments || []   // ✅ NEW
+      comments: ticket.comments || [],
+      source: ticket.source || 'web',
+      raised_by_admin_name: raisedByAdminUser?.name || null
     });
   } catch (err) {
     console.log(err);
@@ -194,9 +241,6 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
-// ======================================
-// UPDATE TICKET ✅ ONLY ONE
-// ======================================
 // ======================================
 // UPDATE TICKET ✅ ONLY ONE
 // ======================================
@@ -252,7 +296,6 @@ router.post('/:id/comment', auth, async (req, res) => {
     const ticket = await Ticket.findById(req.params.id);
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
-    // Access check - only owner or admin can comment
     const isOwner = ticket.created_by?.toString() === req.user.id;
     const isPrivileged = req.user.role === 'admin' || req.user.role === 'system_admin';
     if (!isOwner && !isPrivileged) {
@@ -270,9 +313,7 @@ router.post('/:id/comment', auth, async (req, res) => {
     ticket.comments.push(comment);
     await ticket.save();
 
-    // Notify the other party
     if (isPrivileged) {
-      // Admin commented -> notify employee
       await Notification.create({
         message: `New reply on your ticket "${ticket.subject}"`,
         type: 'ticket_updated',
@@ -281,7 +322,6 @@ router.post('/:id/comment', auth, async (req, res) => {
         user_id: ticket.created_by,
       });
     } else {
-      // Employee commented -> notify admin
       await Notification.create({
         message: `New reply on ticket "${ticket.subject}"`,
         type: 'ticket_updated',
@@ -312,6 +352,9 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
+// ======================================
+// SUBMIT FEEDBACK
+// ======================================
 router.post('/:id/feedback', auth, async (req, res) => {
   try {
     const { rating, comment } = req.body;
@@ -348,89 +391,6 @@ router.post('/:id/feedback', auth, async (req, res) => {
       feedback: ticket.feedback
     });
 
-  } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /tickets — Admin All Tickets
-router.get('/', async (req, res) => {
-  try {
-    const tickets = await Ticket.find().sort({ createdAt: -1 }).lean();
-    const userIds = tickets.map(t => t.created_by).filter(Boolean);
-    const users = await User.find({ _id: { $in: userIds } }).lean();
-    const userMap = {};
-    users.forEach(u => { userMap[u._id.toString()] = u; });
-
-    const mapped = tickets.map(t => {
-      const u = userMap[t.created_by?.toString()];
-      const hasFeedback = t.feedback && t.feedback.submitted_at != null;
-      return {
-        ...t, id: t._id,
-        emp_name: u?.name || 'Unknown',
-        emp_code: u?.emp_id || '',
-        department: u?.department || 'N/A',
-        created_at: t.createdAt,
-        // ✅ FEEDBACK FIELDS
-        has_feedback: hasFeedback,
-        feedback_rating: hasFeedback ? t.feedback.rating : null,
-        feedback_comment: hasFeedback ? t.feedback.comment : ''
-      };
-    });
-    res.json(mapped);
-  } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get('/stats', auth, async (req, res) => {
-  try {
-    const [total, open, critical, in_progress, resolved, closed, recent, feedbackAgg] = await Promise.all([
-      Ticket.countDocuments(),
-      Ticket.countDocuments({ status: 'open' }),
-      Ticket.countDocuments({ status: 'open', priority: 'critical' }),
-      Ticket.countDocuments({ status: 'in-progress' }),
-      Ticket.countDocuments({ status: 'resolved' }),
-      Ticket.countDocuments({ status: 'closed' }),
-      Ticket.find().sort({ createdAt: -1 }).limit(5).lean(),
-      // ✅ FEEDBACK AGGREGATION
-      Ticket.aggregate([
-        { $match: { 'feedback.submitted_at': { $ne: null } } },
-        { $group: { _id: null, count: { $sum: 1 }, avg: { $avg: '$feedback.rating' } } }
-      ])
-    ]);
-
-    const userIds = recent.map(t => t.created_by).filter(Boolean);
-    const users = await User.find({ _id: { $in: userIds } }).lean();
-    const userMap = {};
-    users.forEach(u => { userMap[u._id.toString()] = u; });
-
-    const recent_tickets = recent.map(t => {
-      const u = userMap[t.created_by?.toString()];
-      return {
-        _id: t._id, id: t._id,
-        ticket_no: t.ticket_no,
-        subject: t.subject,
-        priority: t.priority,
-        status: t.status,
-        category: t.category,
-        emp_name: u?.name || 'Unknown',
-        department: u?.department || 'N/A',
-        created_at: t.createdAt
-      };
-    });
-
-    // ✅ EXTRACT FEEDBACK STATS
-    const feedbackStats = feedbackAgg[0] || { count: 0, avg: 0 };
-
-    res.json({
-      total, open, critical, in_progress, resolved, closed, recent_tickets, recent_activity: [],
-      // ✅ NEW
-      feedback_count: feedbackStats.count,
-      avg_rating: parseFloat(feedbackStats.avg.toFixed(1))
-    });
   } catch (err) {
     console.log(err);
     res.status(500).json({ error: err.message });

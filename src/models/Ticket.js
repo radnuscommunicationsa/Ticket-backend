@@ -57,15 +57,29 @@ const ticketSchema = new mongoose.Schema(
       default: 'Email',
     },
 
+    // ✅ NEW — how this ticket came in
+    source: {
+      type: String,
+      enum: ['web', 'phone', 'walk-in', 'email'],
+      default: 'web',
+    },
+
     created_by: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',        // ✅ Fixed
+      ref: 'User',
       required: true,
+    },
+
+    // ✅ NEW — set only when an admin raises this ticket on behalf of an employee
+    raised_by_admin: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
 
     assigned_to: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',        // ✅ Fixed, duplicate removed
+      ref: 'User',
       default: null,
     },
 
@@ -74,17 +88,15 @@ const ticketSchema = new mongoose.Schema(
       default: null,
     },
 
-   // ✅ ADD THIS
-logs: [
-  {
-    status: { type: String },
-    note:   { type: String },
-    date:   { type: Date, default: Date.now },
-    by:     { type: String }
-  }
-],
+    logs: [
+      {
+        status: { type: String },
+        note:   { type: String },
+        date:   { type: Date, default: Date.now },
+        by:     { type: String }
+      }
+    ],
 
-  // ✅ NEW - Comments thread
     comments: [
       {
         message:      { type: String, required: true },
@@ -95,7 +107,6 @@ logs: [
       }
     ],
 
-    // ✅ NEW - Employee feedback after resolution
     feedback: {
       rating:      { type: Number, min: 1, max: 5, default: null },
       comment:     { type: String, default: '' },
@@ -106,7 +117,7 @@ logs: [
 
   {
     timestamps: true,
-    strictPopulate: false, // ✅ Added
+    strictPopulate: false,
   }
 );
 
@@ -118,7 +129,5 @@ ticketSchema.pre('save', async function (next) {
   }
   next();
 });
-
-
 
 module.exports = mongoose.model('Ticket', ticketSchema);
