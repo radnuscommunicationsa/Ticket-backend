@@ -38,10 +38,16 @@ const takeHomeRequestSchema = new mongoose.Schema({
     required: true
   },
   status: {
-    type: String,
-    enum: ['pending', 'approved_by_manager', 'approved', 'rejected', 'returned'],
-    default: 'pending'
-  },
+  type: String,
+  enum: ['pending', 'approved_by_manager', 'approved', 'rejected', 'returned'],
+  default: 'pending'
+},
+
+notes: {
+  type: String,
+  default: ''
+},
+
   manager_approved_by: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
