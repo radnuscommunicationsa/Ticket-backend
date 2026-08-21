@@ -197,11 +197,30 @@ router.post('/', auth, isAdmin, async (req, res) => {
       });
     }
 
+    let assignedTo = null;
+    let assignedToName = null;
+    let assignedDate = null;
+
+    // If an employee is being assigned at creation time, resolve their name
+    if (req.body.assigned_to) {
+      const employee = await Employee.findById(req.body.assigned_to);
+
+      if (!employee) {
+        return res.status(404).json({
+          error: 'Employee not found'
+        });
+      }
+
+      assignedTo = req.body.assigned_to;
+      assignedToName = employee.name || employee.email;
+      assignedDate = new Date();
+    }
+
     const asset = new Asset({
       ...req.body,
-      assigned_to: null,
-      assigned_to_name: null,
-      assigned_date: null
+      assigned_to: assignedTo,
+      assigned_to_name: assignedToName,
+      assigned_date: assignedDate
     });
 
     await asset.save();
