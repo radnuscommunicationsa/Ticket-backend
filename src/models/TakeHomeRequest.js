@@ -25,10 +25,23 @@ const takeHomeRequestSchema = new mongoose.Schema({
     type: Date,
     required: true
   },
+  /* 🔥 KEY CHANGE 1: is_permanent field add panniruken */
+  is_permanent: {
+    type: Boolean,
+    default: false
+  },
+  /* 🔥 KEY CHANGE 2: to_date required only when NOT permanent */
+    is_permanent: {
+    type: Boolean,
+    default: false
+  },
   to_date: {
     type: Date,
-    required: true
+    required: function() {
+      return this.is_permanent !== true;
+    }
   },
+
   emergency_contact: {
     type: String,
     default: ''
@@ -37,17 +50,17 @@ const takeHomeRequestSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  status: {
-  type: String,
-  enum: ['pending', 'approved_by_manager', 'approved', 'rejected', 'returned'],
-  default: 'pending'
-},
-
-notes: {
-  type: String,
-  default: ''
-},
-
+  /* 🔥 KEY CHANGE 3: 'permanent' status add panniruken */
+    status: {
+    type: String,
+    enum: ['pending', 'approved_by_manager', 'approved', 'rejected', 'returned', 'permanent'],
+    default: 'pending'
+  },
+  
+  notes: {
+    type: String,
+    default: ''
+  },
   manager_approved_by: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
