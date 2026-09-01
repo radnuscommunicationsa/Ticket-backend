@@ -1,9 +1,26 @@
 const router = require('express').Router();
+const path = require('path');
+const multer = require('multer');
 const Ticket = require('../models/Ticket');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 const auth = require('../middleware/auth');
 const isAdmin = require('../middleware/isAdmin');
+
+// ======================================
+// MULTER — file upload storage
+// ======================================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => {
+    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, unique + path.extname(file.originalname));
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+});
 
 // ======================================
 // GET /tickets/stats
@@ -143,8 +160,9 @@ router.get('/', async (req, res) => {
 // Supports:
 //  - Normal self-raise (employee raises for themselves)
 //  - Admin raising a ticket on behalf of an employee (phone/walk-in/email)
+//  - Optional file attachment (multipart/form-data)
 // ======================================
-router.post('/', auth, async (req, res) => {
+router.post('/', auth, upload.single('attachment'), async (req, res) => {
   try {
     const {
       category, priority, subject, description, asset, contact_pref,
@@ -172,19 +190,24 @@ router.post('/', auth, async (req, res) => {
       source: source || 'web',
       created_by,
       raised_by_admin,
-      status: 'open'
+      status: 'open',
+      attachment: req.file ? req.file.filename : null,
     });
 
     await ticket.save();
 
-    // Notify admin
-    await Notification.create({
-      message: `New ticket ${ticket_no} raised: "${subject}" (${priority} priority)`,
-      type: 'ticket_created',
-      role: 'admin',
-      ticket_id: ticket._id,
-      user_id: created_by,
-    });
+    // Notify all admins
+    const admins = await User.find({ role: 'admin' }).select('_id');
+    await Promise.all(admins.map(admin =>
+      Notification.create({
+        message: `New ticket ${ticket_no} raised: "${subject}" (${priority} priority)`,
+        type: 'ticket_created',
+        role: 'admin',
+        ticket_id: ticket._id,
+        ticket_no: ticket.ticket_no,
+        user_id: admin._id,
+      })
+    ));
 
     // Notify the employee the ticket belongs to
     await Notification.create({
@@ -192,6 +215,7 @@ router.post('/', auth, async (req, res) => {
       type: 'ticket_created',
       role: 'employee',
       ticket_id: ticket._id,
+      ticket_no: ticket.ticket_no,
       user_id: created_by,
     });
 

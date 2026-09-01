@@ -38,6 +38,13 @@ const notificationSchema = new mongoose.Schema(
       default: null,
     },
 
+    // NEW — lets the employee notifications page show/link the ticket number
+    // without an extra DB lookup
+    ticket_no: {
+      type: String,
+      default: null,
+    },
+
     is_read: {
       type: Boolean,
       default: false,

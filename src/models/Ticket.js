@@ -51,13 +51,19 @@ const ticketSchema = new mongoose.Schema(
       default: '',
     },
 
+    // ✅ NEW — stores the uploaded file's filename on disk
+    attachment: {
+      type: String,
+      default: null,
+    },
+
     contact_pref: {
       type: String,
       enum: ['Email', 'Phone', 'Slack', 'In-Person'],
       default: 'Email',
     },
 
-    // ✅ NEW — how this ticket came in
+    // how this ticket came in
     source: {
       type: String,
       enum: ['web', 'phone', 'walk-in', 'email'],
@@ -70,7 +76,7 @@ const ticketSchema = new mongoose.Schema(
       required: true,
     },
 
-    // ✅ NEW — set only when an admin raises this ticket on behalf of an employee
+    // set only when an admin raises this ticket on behalf of an employee
     raised_by_admin: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -120,14 +126,5 @@ const ticketSchema = new mongoose.Schema(
     strictPopulate: false,
   }
 );
-
-// Auto-generate ticket_no before saving
-ticketSchema.pre('save', async function (next) {
-  if (!this.ticket_no) {
-    const count = await mongoose.model('Ticket').countDocuments();
-    this.ticket_no = `TKT-${String(count + 1001).padStart(4, '0')}`;
-  }
-  next();
-});
 
 module.exports = mongoose.model('Ticket', ticketSchema);

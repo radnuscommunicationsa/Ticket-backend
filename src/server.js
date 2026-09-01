@@ -27,6 +27,9 @@ app.use(cors({
 // ✅ BODY PARSER (VERY IMPORTANT)
 app.use(express.json());
 
+// ✅ SERVE UPLOADED ATTACHMENTS (NEW)
+app.use('/uploads', express.static('uploads'));
+
 // ✅ ROUTES
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/employees', require('./routes/employees'));
