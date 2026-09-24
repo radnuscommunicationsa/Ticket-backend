@@ -9,6 +9,11 @@ const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
 const isAdmin = require('../middleware/isAdmin');
 
+// Small helper to safely use user input inside a $regex
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 
 // =========================================================
 // FIND & REPLACE ASSET CATEGORY
@@ -26,7 +31,7 @@ router.patch('/find-replace', async (req, res) => {
 
     const assets = await Asset.find({
       category: {
-        $regex: `^${find}$`,
+        $regex: `^${escapeRegex(find)}$`,
         $options: 'i'
       }
     });
@@ -187,15 +192,30 @@ router.get('/', auth, async (req, res) => {
 
 router.post('/', auth, isAdmin, async (req, res) => {
   try {
+    const normalizedCode = (req.body.asset_code || '').trim();
+
+    if (!normalizedCode) {
+      return res.status(400).json({
+        error: 'Asset code is required'
+      });
+    }
+
+    // ✅ Trim + case-insensitive exact match — catches "RC-CHG-013 ",
+    // "rc-chg-013", etc. as the same code
     const existing = await Asset.findOne({
-      asset_code: req.body.asset_code
+      asset_code: {
+        $regex: `^${escapeRegex(normalizedCode)}$`,
+        $options: 'i'
+      }
     });
 
     if (existing) {
       return res.status(400).json({
-        error: 'Asset code already exists'
+        error: `Asset code "${normalizedCode}" already exists (as "${existing.asset_code}")`
       });
     }
+
+    req.body.asset_code = normalizedCode; // store cleaned value
 
     let assignedTo = null;
     let assignedToName = null;
@@ -232,6 +252,13 @@ router.post('/', auth, isAdmin, async (req, res) => {
 
   } catch (err) {
     console.error('POST /assets error:', err);
+
+    // Mongoose unique-index violation safety net (E11000)
+    if (err.code === 11000) {
+      return res.status(400).json({
+        error: 'Asset code already exists'
+      });
+    }
 
     res.status(500).json({
       error: err.message
@@ -344,6 +371,32 @@ router.patch('/:id/unassign', auth, isAdmin, async (req, res) => {
 
 router.patch('/:id', auth, isAdmin, async (req, res) => {
   try {
+    if (req.body.asset_code) {
+      const normalizedCode = req.body.asset_code.trim();
+
+      if (!normalizedCode) {
+        return res.status(400).json({
+          error: 'Asset code cannot be empty'
+        });
+      }
+
+      const existing = await Asset.findOne({
+        _id: { $ne: req.params.id },   // exclude itself
+        asset_code: {
+          $regex: `^${escapeRegex(normalizedCode)}$`,
+          $options: 'i'
+        }
+      });
+
+      if (existing) {
+        return res.status(400).json({
+          error: `Asset code "${normalizedCode}" already exists (as "${existing.asset_code}")`
+        });
+      }
+
+      req.body.asset_code = normalizedCode;
+    }
+
     const asset = await Asset.findByIdAndUpdate(
       req.params.id,
       {
@@ -367,6 +420,12 @@ router.patch('/:id', auth, isAdmin, async (req, res) => {
 
   } catch (err) {
     console.error('PATCH /assets error:', err);
+
+    if (err.code === 11000) {
+      return res.status(400).json({
+        error: 'Asset code already exists'
+      });
+    }
 
     res.status(500).json({
       error: err.message
