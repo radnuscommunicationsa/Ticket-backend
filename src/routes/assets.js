@@ -9,9 +9,35 @@ const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
 const isAdmin = require('../middleware/isAdmin');
 
-// Small helper to safely use user input inside a $regex
 function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Fields that must be unique across all assets
+const UNIQUE_FIELDS = [
+  { path: 'sim_number', label: 'SIM number' },
+  { path: 'specs.imei1', label: 'IMEI 1' },
+  { path: 'specs.imei2', label: 'IMEI 2' },
+];
+
+async function findDuplicate(body, excludeId) {
+  for (const f of UNIQUE_FIELDS) {
+    const value = f.path.split('.').reduce((o, k) => (o ? o[k] : undefined), body);
+
+    if (!value || !String(value).trim()) continue;
+
+    const query = { [f.path]: String(value).trim() };
+
+    if (excludeId) query._id = { $ne: excludeId };
+
+    const dup = await Asset.findOne(query).select('asset_code name');
+
+    if (dup) {
+      return `${f.label} already used by ${dup.asset_code} – ${dup.name}`;
+    }
+  }
+
+  return null;
 }
 
 
@@ -215,7 +241,13 @@ router.post('/', auth, isAdmin, async (req, res) => {
       });
     }
 
-    req.body.asset_code = normalizedCode; // store cleaned value
+        req.body.asset_code = normalizedCode; // store cleaned value
+
+    const dupMsg = await findDuplicate(req.body);
+
+    if (dupMsg) {
+      return res.status(400).json({ error: dupMsg });
+    }
 
     let assignedTo = null;
     let assignedToName = null;
@@ -395,6 +427,12 @@ router.patch('/:id', auth, isAdmin, async (req, res) => {
       }
 
       req.body.asset_code = normalizedCode;
+    }
+
+      const dupMsg = await findDuplicate(req.body, req.params.id);
+
+    if (dupMsg) {
+      return res.status(400).json({ error: dupMsg });
     }
 
     const asset = await Asset.findByIdAndUpdate(

@@ -12,6 +12,14 @@ const AssetSchema = new mongoose.Schema({
   location: String,
   notes: String,
   status: { type: String, default: 'Available' },
+
+  // SIM Card
+  sim_number: { type: String, trim: true, default: '' },
+  sim_provider: { type: String, trim: true, default: '' },
+
+  // Category-specific details (IMEI, RAM, Storage, MAC, IP ...)
+  specs: { type: mongoose.Schema.Types.Mixed, default: {} },
+
   assigned_to: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
