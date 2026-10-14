@@ -1,49 +1,397 @@
-const router = require('express').Router();
+
+const express = require('express');
+const mongoose = require('mongoose');
+const router = express.Router();
 
 const Asset = require('../models/Asset');
-const Employee = require('../models/User');
+const AssetHistory = require('../models/AssetHistory');
 const TakeHomeRequest = require('../models/TakeHomeRequest');
-const Notification = require('../models/Notification');
 
-const jwt = require('jsonwebtoken');
-const auth = require('../middleware/auth');
-const isAdmin = require('../middleware/isAdmin');
+/* =========================================================
+   HELPERS
+========================================================= */
 
-function escapeRegex(str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+const DATE_FIELDS = ['purchase_date', 'warranty_until'];
 
-// Fields that must be unique across all assets
-const UNIQUE_FIELDS = [
-  { path: 'sim_number', label: 'SIM number' },
-  { path: 'specs.imei1', label: 'IMEI 1' },
-  { path: 'specs.imei2', label: 'IMEI 2' },
+const EDITABLE = [
+  'asset_code',
+  'name',
+  'serial_no',
+  'category',
+  'brand',
+  'model',
+  'purchase_date',
+  'warranty_until',
+  'location',
+  'notes',
+  'status',
+  'sim_number',
+  'sim_provider',
+  'specs',
 ];
 
-async function findDuplicate(body, excludeId) {
-  for (const f of UNIQUE_FIELDS) {
-    const value = f.path.split('.').reduce((o, k) => (o ? o[k] : undefined), body);
+const doneBy = (req) =>
+  req.user?.name ||
+  req.user?.full_name ||
+  req.user?.email ||
+  'Admin';
 
-    if (!value || !String(value).trim()) continue;
+function pickFields(body = {}) {
+  const out = {};
 
-    const query = { [f.path]: String(value).trim() };
+  EDITABLE.forEach((key) => {
+    if (body[key] === undefined) return;
 
-    if (excludeId) query._id = { $ne: excludeId };
+    out[key] = DATE_FIELDS.includes(key)
+      ? (body[key] || null)
+      : body[key];
+  });
 
-    const dup = await Asset.findOne(query).select('asset_code name');
+  return out;
+}
 
-    if (dup) {
-      return `${f.label} already used by ${dup.asset_code} – ${dup.name}`;
-    }
+function getEmployeeId(req) {
+  return req.user?._id || req.user?.id || req.user?.userId || null;
+}
+
+async function findPerson(id) {
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    return null;
+  }
+
+  for (const modelName of ['Employee', 'Admin', 'User']) {
+    const M = mongoose.models[modelName];
+    if (!M) continue;
+
+    const person = await M.findById(id).lean();
+    if (person) return person;
   }
 
   return null;
 }
 
+const personName = (p) =>
+  p?.name || p?.full_name || p?.username || '';
 
-// =========================================================
-// FIND & REPLACE ASSET CATEGORY
-// =========================================================
+const logHistory = (asset, data) =>
+  AssetHistory.create({
+    asset: asset._id,
+    asset_code: asset.asset_code,
+    asset_name: asset.name,
+    ...data,
+  });
+
+/* =========================================================
+   MY ASSETS
+   GET /api/assets/my-assets
+========================================================= */
+
+router.get('/my-assets', async (req, res) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
+      return res.status(401).json({
+        message: 'Login required to view assigned assets.',
+      });
+    }
+
+    const assets = await Asset.find({
+      assigned_to: employeeId,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+        return res.json({ assets });
+  } catch (err) {
+    console.error('My assets error:', err);
+    return res.status(500).json({
+      message: 'Failed to load assigned assets.',
+    });
+  }
+});
+
+/* =========================================================
+   MY TAKE-HOME REQUESTS
+   GET /api/assets/take-home-requests/my
+========================================================= */
+
+router.get('/take-home-requests/my', async (req, res) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
+      return res.status(401).json({
+        message: 'Login required to view your requests.',
+      });
+    }
+
+    const requests = await TakeHomeRequest.find({
+      employee_id: employeeId,
+    })
+      .populate('asset_id')
+      .sort({ created_at: -1 })
+      .lean();
+
+        return res.json({ requests });
+  } catch (err) {
+    console.error('My take-home requests error:', err);
+    return res.status(500).json({
+      message: 'Failed to load take-home requests.',
+    });
+  }
+});
+
+/* =========================================================
+   CREATE TAKE-HOME REQUEST
+   POST /api/assets/take-home-requests
+========================================================= */
+
+router.post('/take-home-requests', async (req, res) => {
+  try {
+    const employeeId = getEmployeeId(req);
+
+    if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
+      return res.status(401).json({
+        message: 'Login required to submit a request.',
+      });
+    }
+
+    const {
+      asset_id,
+      asset_type,
+      reason,
+      from_date,
+      to_date,
+      is_permanent,
+      emergency_contact,
+      emergency_phone,
+    } = req.body;
+
+    if (
+      !asset_id ||
+      !mongoose.Types.ObjectId.isValid(String(asset_id)) ||
+      !reason?.trim() ||
+      !from_date ||
+      !to_date ||
+      !emergency_phone?.trim()
+    ) {
+      return res.status(400).json({
+        message: 'Please provide valid asset, reason, dates and emergency phone.',
+      });
+    }
+
+    const startDate = new Date(from_date);
+    const endDate = new Date(to_date);
+
+    if (
+      Number.isNaN(startDate.getTime()) ||
+      Number.isNaN(endDate.getTime())
+    ) {
+      return res.status(400).json({
+        message: 'Invalid request dates.',
+      });
+    }
+
+    if (endDate < startDate) {
+      return res.status(400).json({
+        message: 'To date cannot be earlier than from date.',
+      });
+    }
+
+    const asset = await Asset.findById(asset_id);
+
+    if (!asset) {
+      return res.status(404).json({
+        message: 'Asset not found.',
+      });
+    }
+
+    if (String(asset.assigned_to) !== String(employeeId)) {
+      return res.status(403).json({
+        message: 'You can request only assets assigned to you.',
+      });
+    }
+
+    const request = await TakeHomeRequest.create({
+      employee_id: employeeId,
+      asset_id: asset._id,
+      asset_type: asset_type || asset.category || '',
+      reason: reason.trim(),
+      from_date: startDate,
+      to_date: endDate,
+      is_permanent: is_permanent === true || is_permanent === 'true',
+      emergency_contact: emergency_contact || '',
+      emergency_phone: emergency_phone.trim(),
+    });
+
+    return res.status(201).json({
+      message: 'Take-home request submitted successfully.',
+      request,
+    });
+  } catch (err) {
+    console.error('Create take-home request error:', err);
+
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({
+        message: err.message,
+      });
+    }
+
+    return res.status(500).json({
+      message: 'Failed to submit take-home request.',
+    });
+  }
+});
+
+/* =========================================================
+   PENDING TAKE-HOME REQUEST COUNT
+   GET /api/assets/take-home-requests/pending-count
+========================================================= */
+
+router.get('/take-home-requests/pending-count', async (req, res) => {
+  try {
+    const count = await TakeHomeRequest.countDocuments({
+      status: 'pending',
+    });
+
+    return res.json({ count });
+  } catch (err) {
+    console.error('Pending take-home count error:', err);
+
+    return res.status(500).json({
+      error: 'Failed to fetch pending take-home request count.',
+    });
+  }
+});
+
+/* =========================================================
+   ALL TAKE-HOME REQUESTS (ADMIN)
+   GET /api/assets/take-home-requests
+========================================================= */
+
+router.get('/take-home-requests', async (req, res) => {
+  try {
+    const requests = await TakeHomeRequest.find()
+      .populate('employee_id', 'name emp_id department')
+      .populate('asset_id', 'asset_code name model')
+      .sort({ created_at: -1 })
+      .lean();
+
+    return res.json({ requests });
+  } catch (err) {
+    console.error('All take-home requests error:', err);
+    return res.status(500).json({ error: 'Failed to load take-home requests.' });
+  }
+});
+
+/* =========================================================
+   UPDATE TAKE-HOME REQUEST STATUS
+   PATCH /api/assets/take-home-requests/:id/status
+========================================================= */
+
+router.patch('/take-home-requests/:id/status', async (req, res) => {
+  try {
+    const { status, notes } = req.body;
+    const allowed = ['pending', 'approved_by_manager', 'approved', 'rejected', 'returned'];
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid request id.' });
+    }
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status.' });
+    }
+
+    const request = await TakeHomeRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    request.status = status;
+    if (notes) request.notes = notes;
+    await request.save();
+
+    return res.json({ request });
+  } catch (err) {
+    console.error('Update take-home status error:', err);
+    return res.status(500).json({ error: 'Failed to update request.' });
+  }
+});
+
+/* =========================================================
+   DELETE TAKE-HOME REQUEST
+   DELETE /api/assets/take-home-requests/:id
+========================================================= */
+
+router.delete('/take-home-requests/:id', async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid request id.' });
+    }
+
+    const request = await TakeHomeRequest.findByIdAndDelete(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    return res.json({ message: 'Request deleted.' });
+  } catch (err) {
+    console.error('Delete take-home request error:', err);
+    return res.status(500).json({ error: 'Failed to delete request.' });
+  }
+});
+
+/* =========================================================
+   HISTORY OF ONE PERSON (all assets)
+   GET /api/assets/employee/:employeeId/history
+========================================================= */
+
+router.get('/employee/:employeeId/history', async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.employeeId)) {
+      return res.status(400).json({ error: 'Invalid employee id.' });
+    }
+
+    const history = await AssetHistory.find({
+      employee: req.params.employeeId,
+    })
+      .sort({ date: -1 })
+      .lean();
+
+    return res.json({ history });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* =========================================================
+   GET ALL ASSETS (+ STATS)
+========================================================= */
+
+router.get('/', async (req, res) => {
+  try {
+    const assets = await Asset.find()
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const stats = {
+      total: assets.length,
+      available: assets.filter((a) => a.status === 'Available').length,
+      assigned: assets.filter((a) => a.status === 'Assigned').length,
+      repair: assets.filter(
+        (a) => a.status === 'Under Repair' || a.status === 'Damaged'
+      ).length,
+    };
+
+    return res.json({ assets, stats });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* =========================================================
+   FIND & REPLACE CATEGORY
+========================================================= */
 
 router.patch('/find-replace', async (req, res) => {
   try {
@@ -51,1227 +399,305 @@ router.patch('/find-replace', async (req, res) => {
 
     if (!find || !replace) {
       return res.status(400).json({
-        error: 'Find and Replace values are required'
+        error: 'Both categories are required.',
       });
     }
 
-    const assets = await Asset.find({
-      category: {
-        $regex: `^${escapeRegex(find)}$`,
-        $options: 'i'
-      }
+    const result = await Asset.updateMany(
+      { category: find },
+      { $set: { category: replace } }
+    );
+
+    return res.json({
+      modified: result.modifiedCount ?? result.nModified ?? 0,
     });
-
-    let updated = 0;
-
-    for (const asset of assets) {
-      asset.category = replace;
-      await asset.save();
-      updated++;
-    }
-
-    res.json({
-      success: true,
-      message: `${updated} asset(s) updated: category changed from "${find}" to "${replace}"`
-    });
-
   } catch (err) {
-    console.error(err);
-
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
+/* =========================================================
+   CREATE ASSET
+========================================================= */
 
-// =========================================================
-// GET MY ASSETS
-// =========================================================
-
-router.get('/my-assets', auth, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const user = req.user;
+    const data = pickFields(req.body);
 
-    if (!user) {
-      return res.status(404).json({
-        error: 'User not found'
-      });
-    }
-
-    const userId = user._id || user.id;
-
-    if (!userId) {
-      return res.status(401).json({
-        error: 'Invalid user session, please login again'
-      });
-    }
-
-    const assets = await Asset.find({
-      assigned_to: userId
-    }).lean();
-
-    res.json({
-      assets
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      error: err.message
-    });
-  }
-});
-
-
-// =========================================================
-// GET ALL ASSETS
-// =========================================================
-
-router.get('/', auth, async (req, res) => {
-  try {
-    let filter = {};
-
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-
-    if (req.query.q) {
-      const q = req.query.q;
-
-      filter.$or = [
-        {
-          name: {
-            $regex: q,
-            $options: 'i'
-          }
-        },
-        {
-          asset_code: {
-            $regex: q,
-            $options: 'i'
-          }
-        },
-        {
-          brand: {
-            $regex: q,
-            $options: 'i'
-          }
-        },
-        {
-          model: {
-            $regex: q,
-            $options: 'i'
-          }
-        },
-        {
-          assigned_to_name: {
-            $regex: q,
-            $options: 'i'
-          }
-        }
-      ];
-    }
-
-    const assets = await Asset.find(filter)
-      .sort({
-        createdAt: -1
-      });
-
-    const allAssets = await Asset.find({});
-
-    const stats = {
-      total: allAssets.length,
-
-      available: allAssets.filter(
-        a => a.status === 'Available'
-      ).length,
-
-      assigned: allAssets.filter(
-        a => a.status === 'Assigned'
-      ).length,
-
-      repair: allAssets.filter(
-        a =>
-          a.status === 'Under Repair' ||
-          a.status === 'Damaged'
-      ).length
-    };
-
-    res.json({
-      assets,
-      stats
-    });
-
-  } catch (err) {
-    console.error('GET /assets error:', err);
-
-    res.status(500).json({
-      error: err.message
-    });
-  }
-});
-
-
-// =========================================================
-// ADD NEW ASSET
-// =========================================================
-
-router.post('/', auth, isAdmin, async (req, res) => {
-  try {
-    const normalizedCode = (req.body.asset_code || '').trim();
-
-    if (!normalizedCode) {
+    if (!data.asset_code || !data.name) {
       return res.status(400).json({
-        error: 'Asset code is required'
+        error: 'Asset code and asset name are required.',
       });
     }
 
-    // ✅ Trim + case-insensitive exact match — catches "RC-CHG-013 ",
-    // "rc-chg-013", etc. as the same code
-    const existing = await Asset.findOne({
-      asset_code: {
-        $regex: `^${escapeRegex(normalizedCode)}$`,
-        $options: 'i'
-      }
+    const dup = await Asset.findOne({
+      asset_code: data.asset_code,
     });
 
-    if (existing) {
+    if (dup) {
       return res.status(400).json({
-        error: `Asset code "${normalizedCode}" already exists (as "${existing.asset_code}")`
+        error: `Asset code ${data.asset_code} already exists.`,
       });
     }
 
-        req.body.asset_code = normalizedCode; // store cleaned value
+    const person = await findPerson(req.body.assigned_to);
 
-    const dupMsg = await findDuplicate(req.body);
-
-    if (dupMsg) {
-      return res.status(400).json({ error: dupMsg });
+    if (person) {
+      data.assigned_to = person._id;
+      data.assigned_to_name = personName(person);
+      data.assigned_date = new Date();
+      data.status = 'Assigned';
+    } else if (data.status === 'Assigned') {
+      data.status = 'Available';
     }
 
-    let assignedTo = null;
-    let assignedToName = null;
-    let assignedDate = null;
+    const asset = await Asset.create(data);
+    const now = Date.now();
 
-    // If an employee is being assigned at creation time, resolve their name
-    if (req.body.assigned_to) {
-      const employee = await Employee.findById(req.body.assigned_to);
+    await logHistory(asset, {
+      action: 'Created',
+      reason: 'Asset created',
+      done_by: doneBy(req),
+      date: new Date(now),
+    });
 
-      if (!employee) {
-        return res.status(404).json({
-          error: 'Employee not found'
-        });
-      }
-
-      assignedTo = req.body.assigned_to;
-      assignedToName = employee.name || employee.email;
-      assignedDate = new Date();
+    if (person) {
+      await logHistory(asset, {
+        action: 'Assigned',
+        employee: person._id,
+        employee_name: personName(person),
+        reason: 'Assigned while adding asset',
+        done_by: doneBy(req),
+        date: new Date(now + 1),
+      });
     }
 
-    const asset = new Asset({
-      ...req.body,
-      assigned_to: assignedTo,
-      assigned_to_name: assignedToName,
-      assigned_date: assignedDate
-    });
-
-    await asset.save();
-
-    res.json({
-      success: true,
-      asset
-    });
-
+    return res.status(201).json(asset);
   } catch (err) {
-    console.error('POST /assets error:', err);
-
-    // Mongoose unique-index violation safety net (E11000)
     if (err.code === 11000) {
       return res.status(400).json({
-        error: 'Asset code already exists'
+        error: 'This asset code already exists.',
       });
     }
 
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
+/* =========================================================
+   HISTORY OF ONE ASSET
+========================================================= */
 
-// =========================================================
-// ASSIGN ASSET TO EMPLOYEE
-// =========================================================
-
-router.patch('/:id/assign', auth, isAdmin, async (req, res) => {
+router.get('/:id/history', async (req, res) => {
   try {
-    const { employee_id } = req.body;
-
-    if (!employee_id) {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({
-        error: 'Employee ID is required'
+        error: 'Invalid asset id.',
       });
     }
+
+    const history = await AssetHistory.find({
+      asset: req.params.id,
+    })
+      .sort({ date: -1 })
+      .lean();
+
+    return res.json({ history });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* =========================================================
+   ASSIGN ASSET
+========================================================= */
+
+router.patch('/:id/assign', async (req, res) => {
+  try {
+    const { employee_id, reason } = req.body;
 
     const asset = await Asset.findById(req.params.id);
 
     if (!asset) {
       return res.status(404).json({
-        error: 'Asset not found'
+        error: 'Asset not found.',
       });
     }
 
-    if (asset.status === 'Assigned') {
-      return res.status(400).json({
-        error: 'Asset is already assigned. Unassign it first.'
-      });
-    }
+    const person = await findPerson(employee_id);
 
-    const employee = await Employee.findById(employee_id);
-
-    if (!employee) {
+    if (!person) {
       return res.status(404).json({
-        error: 'Employee not found'
+        error: 'Employee / Admin not found.',
       });
     }
 
-    const empName = employee.name || employee.email;
+    const now = Date.now();
 
+    if (asset.assigned_to || asset.assigned_to_name) {
+      await logHistory(asset, {
+        action: 'Unassigned',
+        employee: asset.assigned_to,
+        employee_name: asset.assigned_to_name,
+        reason: 'Reassigned',
+        done_by: doneBy(req),
+        date: new Date(now - 1),
+      });
+    }
+
+    asset.assigned_to = person._id;
+    asset.assigned_to_name = personName(person);
+    asset.assigned_date = new Date(now);
     asset.status = 'Assigned';
-    asset.assigned_to = employee_id;
-    asset.assigned_to_name = empName;
-    asset.assigned_date = new Date();
 
     await asset.save();
 
-    res.json({
-      success: true,
-      message: `Asset assigned to ${empName}`,
-      asset
+    await logHistory(asset, {
+      action: 'Assigned',
+      employee: person._id,
+      employee_name: personName(person),
+      reason: reason || 'Assigned',
+      done_by: doneBy(req),
+      date: new Date(now),
     });
 
+    return res.json(asset);
   } catch (err) {
-    console.error('ASSIGN error:', err);
-
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
+/* =========================================================
+   UNASSIGN ASSET
+========================================================= */
 
-// =========================================================
-// UNASSIGN ASSET
-// =========================================================
+router.patch('/:id/unassign', async (req, res) => {
+  try {
+    const { reason } = req.body;
 
-router.patch('/:id/unassign', auth, isAdmin, async (req, res) => {
+    const asset = await Asset.findById(req.params.id);
+
+    if (!asset) {
+      return res.status(404).json({
+        error: 'Asset not found.',
+      });
+    }
+
+    await logHistory(asset, {
+      action: 'Unassigned',
+      employee: asset.assigned_to,
+      employee_name: asset.assigned_to_name,
+      reason: reason || 'Unassigned',
+      done_by: doneBy(req),
+      date: new Date(),
+    });
+
+    asset.assigned_to = null;
+    asset.assigned_to_name = '';
+    asset.assigned_date = null;
+    asset.status = 'Available';
+
+    await asset.save();
+
+    return res.json(asset);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* =========================================================
+   GET ONE ASSET
+========================================================= */
+
+router.get('/:id', async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        error: 'Invalid asset id.',
+      });
+    }
+
+    const asset = await Asset.findById(req.params.id).lean();
+
+    if (!asset) {
+      return res.status(404).json({
+        error: 'Asset not found.',
+      });
+    }
+
+    return res.json(asset);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* =========================================================
+   UPDATE ASSET
+========================================================= */
+
+router.patch('/:id', async (req, res) => {
   try {
     const asset = await Asset.findById(req.params.id);
 
     if (!asset) {
       return res.status(404).json({
-        error: 'Asset not found'
+        error: 'Asset not found.',
       });
     }
 
-    asset.status = 'Available';
-    asset.assigned_to = null;
-    asset.assigned_to_name = null;
-    asset.assigned_date = null;
+    const data = pickFields(req.body);
 
+    if (data.asset_code && data.asset_code !== asset.asset_code) {
+      const dup = await Asset.findOne({
+        asset_code: data.asset_code,
+        _id: { $ne: asset._id },
+      });
+
+      if (dup) {
+        return res.status(400).json({
+          error: `Asset code ${data.asset_code} already exists.`,
+        });
+      }
+    }
+
+    const oldStatus = asset.status;
+
+    Object.assign(asset, data);
     await asset.save();
 
-    res.json({
-      success: true,
-      message: 'Asset unassigned successfully',
-      asset
-    });
+    if (data.status && data.status !== oldStatus) {
+      await logHistory(asset, {
+        action: 'Status Changed',
+        reason: `${oldStatus} -> ${data.status}`,
+        done_by: doneBy(req),
+        date: new Date(),
+      });
+    }
 
+    return res.json(asset);
   } catch (err) {
-    console.error('UNASSIGN error:', err);
-
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
+/* =========================================================
+   DELETE ASSET
+========================================================= */
 
-// =========================================================
-// UPDATE ASSET
-// =========================================================
-
-router.patch('/:id', auth, isAdmin, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
-    if (req.body.asset_code) {
-      const normalizedCode = req.body.asset_code.trim();
-
-      if (!normalizedCode) {
-        return res.status(400).json({
-          error: 'Asset code cannot be empty'
-        });
-      }
-
-      const existing = await Asset.findOne({
-        _id: { $ne: req.params.id },   // exclude itself
-        asset_code: {
-          $regex: `^${escapeRegex(normalizedCode)}$`,
-          $options: 'i'
-        }
-      });
-
-      if (existing) {
-        return res.status(400).json({
-          error: `Asset code "${normalizedCode}" already exists (as "${existing.asset_code}")`
-        });
-      }
-
-      req.body.asset_code = normalizedCode;
-    }
-
-      const dupMsg = await findDuplicate(req.body, req.params.id);
-
-    if (dupMsg) {
-      return res.status(400).json({ error: dupMsg });
-    }
-
-    const asset = await Asset.findByIdAndUpdate(
-      req.params.id,
-      {
-        $set: req.body
-      },
-      {
-        new: true
-      }
-    );
+    const asset = await Asset.findByIdAndDelete(req.params.id);
 
     if (!asset) {
       return res.status(404).json({
-        error: 'Asset not found'
+        error: 'Asset not found.',
       });
     }
 
-    res.json({
-      success: true,
-      asset
-    });
-
+    return res.json({ message: 'Asset deleted.' });
   } catch (err) {
-    console.error('PATCH /assets error:', err);
-
-    if (err.code === 11000) {
-      return res.status(400).json({
-        error: 'Asset code already exists'
-      });
-    }
-
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
-
-// =========================================================
-// DELETE ASSET
-// =========================================================
-
-router.delete('/:id', auth, isAdmin, async (req, res) => {
-  try {
-    const asset = await Asset.findByIdAndDelete(
-      req.params.id
-    );
-
-    if (!asset) {
-      return res.status(404).json({
-        error: 'Asset not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Asset deleted'
-    });
-
-  } catch (err) {
-    console.error('DELETE /assets error:', err);
-
-    res.status(500).json({
-      error: err.message
-    });
-  }
-});
-
-
-// =========================================================
-// TAKE-HOME REQUEST
-// EMPLOYEE SUBMITS
-// =========================================================
-
-router.post('/take-home-requests', auth, async (req, res) => {
-  try {
-
-    const {
-      asset_type,
-      asset_id,
-      reason,
-      from_date,
-      to_date,
-      emergency_contact,
-      emergency_phone
-    } = req.body;
-
-
-    // -----------------------------
-    // VALIDATION
-    // -----------------------------
-
-    if (
-      !asset_type ||
-      !asset_id ||
-      !reason ||
-      !from_date ||
-      !to_date ||
-      !emergency_phone
-    ) {
-      return res.status(400).json({
-        error: 'All required fields must be filled'
-      });
-    }
-
-
-    if (reason.trim().length < 10) {
-      return res.status(400).json({
-        error: 'Reason must be at least 10 characters'
-      });
-    }
-
-
-    const fromDate = new Date(from_date);
-    const toDate = new Date(to_date);
-
-
-    if (
-      isNaN(fromDate.getTime()) ||
-      isNaN(toDate.getTime())
-    ) {
-      return res.status(400).json({
-        error: 'Invalid date format'
-      });
-    }
-
-
-    if (toDate < fromDate) {
-      return res.status(400).json({
-        error: 'Return date must be after or same as from date'
-      });
-    }
-
-
-    // -----------------------------
-    // VERIFY ASSET
-    // -----------------------------
-
-    const asset = await Asset.findById(asset_id);
-
-    if (!asset) {
-      return res.status(404).json({
-        error: 'Asset not found'
-      });
-    }
-
-
-    const employeeId =
-      req.user._id || req.user.id;
-
-
-    // -----------------------------
-    // CHECK ASSIGNED EMPLOYEE
-    // -----------------------------
-
-    const assignedToId = asset.assigned_to
-      ? asset.assigned_to.toString()
-      : null;
-
-
-    if (
-      assignedToId !== employeeId.toString()
-    ) {
-      return res.status(403).json({
-        error: 'This asset is not assigned to you'
-      });
-    }
-
-
-    // -----------------------------
-    // CHECK EXISTING REQUEST
-    // -----------------------------
-
-    const existingRequest =
-      await TakeHomeRequest.findOne({
-        employee_id: employeeId,
-        asset_id: asset_id,
-        status: {
-          $in: [
-            'pending',
-            'approved_by_manager',
-            'approved'
-          ]
-        }
-      });
-
-
-    if (existingRequest) {
-      return res.status(400).json({
-        error:
-          'You already have an active/pending take-home request for this asset'
-      });
-    }
-
-
-    // -----------------------------
-    // CREATE REQUEST
-    // -----------------------------
-
-    const request = new TakeHomeRequest({
-
-      employee_id: employeeId,
-
-      asset_id: asset_id,
-
-      asset_type: asset_type,
-
-      reason: reason.trim(),
-
-      from_date: fromDate,
-
-      to_date: toDate,
-
-      emergency_contact:
-        emergency_contact || req.user.name,
-
-      emergency_phone:
-        emergency_phone.trim(),
-
-      status: 'pending',
-
-      created_at: new Date()
-    });
-
-
-    await request.save();
-
-
-    // =====================================================
-    // 🔔 NOTIFY ADMIN
-    // =====================================================
-
-    const employee =
-      await Employee.findById(employeeId)
-        .select('name emp_id department');
-
-
-    const employeeName =
-      employee?.name ||
-      employee?.emp_id ||
-      'Employee';
-
-
-    const assetName =
-      asset.asset_code ||
-      asset.name ||
-      asset.model ||
-      asset_type;
-
-
-    const admins =
-      await Employee.find({
-        role: {
-          $in: [
-            'admin',
-            'system_admin'
-          ]
-        }
-      }).select('_id');
-
-
-    await Promise.all(
-      admins.map(admin =>
-        Notification.create({
-          message:
-            `${employeeName} submitted a new take-home request for ${assetName}.`,
-
-          type:
-            'take_home_request',
-
-          role:
-            'admin',
-
-          user_id:
-            admin._id,
-
-          is_read:
-            false
-        })
-      )
-    );
-
-
-    // -----------------------------
-    // RESPONSE
-    // -----------------------------
-
-    res.status(201).json({
-
-      success: true,
-
-      message:
-        'Take-home request submitted successfully',
-
-      request_id:
-        request._id.toString(),
-
-      request
-    });
-
-
-  } catch (err) {
-
-    console.error(
-      'POST /take-home-requests error:',
-      err
-    );
-
-    res.status(500).json({
-      error:
-        err.message ||
-        'Failed to submit request'
-    });
-  }
-});
-
-
-// =========================================================
-// 🔔 TAKE-HOME PENDING COUNT
-// ADMIN SIDEBAR BADGE
-// =========================================================
-
-router.get(
-  '/take-home-requests/pending-count',
-  auth,
-  isAdmin,
-  async (req, res) => {
-
-    try {
-
-      const count =
-        await TakeHomeRequest.countDocuments({
-          status: {
-            $in: [
-              'pending',
-              'approved_by_manager'
-            ]
-          }
-        });
-
-
-      res.json({
-        count
-      });
-
-
-    } catch (err) {
-
-      console.error(
-        'GET /take-home-requests/pending-count error:',
-        err
-      );
-
-      res.status(500).json({
-        error:
-          err.message ||
-          'Failed to get pending request count'
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// GET MY TAKE-HOME REQUESTS
-// EMPLOYEE
-// =========================================================
-
-router.get(
-  '/take-home-requests/my',
-  auth,
-  async (req, res) => {
-
-    try {
-
-      const employeeId =
-        req.user._id || req.user.id;
-
-
-      const requests =
-        await TakeHomeRequest.find({
-          employee_id: employeeId
-        })
-        .populate(
-          'asset_id',
-          'asset_code name model category'
-        )
-        .sort({
-          created_at: -1
-        });
-
-
-      res.json({
-        requests
-      });
-
-
-    } catch (err) {
-
-      console.error(
-        'GET /take-home-requests/my error:',
-        err
-      );
-
-      res.status(500).json({
-        error: err.message
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// GET ALL TAKE-HOME REQUESTS
-// ADMIN / MANAGER
-// =========================================================
-
-router.get(
-  '/take-home-requests',
-  auth,
-  isAdmin,
-  async (req, res) => {
-
-    try {
-
-      const filter = {};
-
-
-      if (req.query.status) {
-        filter.status =
-          req.query.status;
-      }
-
-
-      const requests =
-        await TakeHomeRequest.find(filter)
-        .populate(
-          'employee_id',
-          'name emp_id department'
-        )
-        .populate(
-          'asset_id',
-          'asset_code name model'
-        )
-        .sort({
-          created_at: -1
-        });
-
-
-      res.json({
-        requests
-      });
-
-
-    } catch (err) {
-
-      console.error(
-        'GET /take-home-requests error:',
-        err
-      );
-
-      res.status(500).json({
-        error: err.message
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// APPROVE / REJECT TAKE-HOME REQUEST
-// MANAGER / ADMIN
-// =========================================================
-
-router.patch(
-  '/take-home-requests/:id/status',
-  auth,
-  async (req, res) => {
-
-    try {
-
-      const {
-        status,
-        notes
-      } = req.body;
-
-
-      const requestId =
-        req.params.id;
-
-
-      const approverId =
-        req.user._id || req.user.id;
-
-
-      const userRole =
-        req.user.role;
-
-
-      // -----------------------------
-      // VALID STATUS
-      // -----------------------------
-
-      if (
-        ![
-          'approved_by_manager',
-          'approved',
-          'rejected',
-          'returned'
-        ].includes(status)
-      ) {
-        return res.status(400).json({
-          error: 'Invalid status'
-        });
-      }
-
-
-      // -----------------------------
-      // FIND REQUEST
-      // -----------------------------
-
-      const request =
-        await TakeHomeRequest.findById(
-          requestId
-        );
-
-
-      if (!request) {
-        return res.status(404).json({
-          error: 'Request not found'
-        });
-      }
-
-
-      // -----------------------------
-      // ROLE BASED APPROVAL
-      // -----------------------------
-
-      if (
-        status ===
-        'approved_by_manager'
-      ) {
-
-        if (
-          userRole !== 'admin' &&
-          userRole !== 'system_admin' &&
-          userRole !== 'manager'
-        ) {
-          return res.status(403).json({
-            error:
-              'Only managers can do initial approval'
-          });
-        }
-
-
-        request.manager_approved_by =
-          approverId;
-
-      }
-
-
-      else if (
-        status === 'approved'
-      ) {
-
-        if (
-          userRole !== 'admin' &&
-          userRole !== 'system_admin'
-        ) {
-          return res.status(403).json({
-            error:
-              'Only IT admin can give final approval'
-          });
-        }
-
-
-        request.it_approved_by =
-          approverId;
-
-
-        request.approved_at =
-          new Date();
-
-      }
-
-
-      else if (
-        status === 'rejected'
-      ) {
-
-        request.approved_at =
-          null;
-
-      }
-
-
-      else if (
-        status === 'returned'
-      ) {
-
-        request.returned_at =
-          new Date();
-
-      }
-
-
-      // -----------------------------
-      // SAVE STATUS
-      // -----------------------------
-
-      request.status =
-        status;
-
-
-      if (notes) {
-        request.notes =
-          notes;
-      }
-
-
-      await request.save();
-
-
-      // =====================================================
-      // 🔔 EMPLOYEE NOTIFICATION
-      // =====================================================
-
-      if (
-        status ===
-        'approved_by_manager'
-      ) {
-
-        await Notification.create({
-
-          message:
-            'Your take-home request has been approved by the manager and is waiting for IT approval.',
-
-          type:
-            'take_home_status',
-
-          role:
-            'employee',
-
-          user_id:
-            request.employee_id,
-
-          is_read:
-            false
-        });
-
-
-        // Notify admins for final approval
-        const admins =
-          await Employee.find({
-            role: {
-              $in: [
-                'admin',
-                'system_admin'
-              ]
-            }
-          }).select('_id');
-
-
-        await Promise.all(
-          admins.map(admin =>
-            Notification.create({
-
-              message:
-                'A take-home request is waiting for final IT approval.',
-
-              type:
-                'take_home_request',
-
-              role:
-                'admin',
-
-              user_id:
-                admin._id,
-
-              is_read:
-                false
-            })
-          )
-        );
-      }
-
-
-      else if (
-        status === 'approved'
-      ) {
-
-        await Notification.create({
-
-          message:
-            'Your take-home request has been fully approved and is ready for home use.',
-
-          type:
-            'take_home_status',
-
-          role:
-            'employee',
-
-          user_id:
-            request.employee_id,
-
-          is_read:
-            false
-        });
-      }
-
-
-      else if (
-        status === 'rejected'
-      ) {
-
-        await Notification.create({
-
-          message:
-            `Your take-home request was rejected.${notes ? ` Reason: ${notes}` : ''}`,
-
-          type:
-            'take_home_status',
-
-          role:
-            'employee',
-
-          user_id:
-            request.employee_id,
-
-          is_read:
-            false
-        });
-      }
-
-
-      else if (
-        status === 'returned'
-      ) {
-
-        await Notification.create({
-
-          message:
-            `Your take-home asset has been marked as returned.${notes ? ` ${notes}` : ''}`,
-
-          type:
-            'take_home_status',
-
-          role:
-            'employee',
-
-          user_id:
-            request.employee_id,
-
-          is_read:
-            false
-        });
-      }
-
-
-      // -----------------------------
-      // RESPONSE
-      // -----------------------------
-
-      res.json({
-
-        success: true,
-
-        message:
-          `Request ${status.replace(
-            /_/g,
-            ' '
-          )} successfully`,
-
-        request
-      });
-
-
-    } catch (err) {
-
-      console.error(
-        'PATCH /take-home-requests/status error:',
-        err
-      );
-
-      res.status(500).json({
-        error: err.message
-      });
-    }
-  }
-);
-
-
-// =========================================================
-// DELETE TAKE-HOME REQUEST
-// ADMIN ONLY
-// =========================================================
-
-router.delete(
-  '/take-home-requests/:id',
-  auth,
-  isAdmin,
-  async (req, res) => {
-
-    try {
-
-      const request =
-        await TakeHomeRequest.findByIdAndDelete(
-          req.params.id
-        );
-
-
-      if (!request) {
-        return res.status(404).json({
-          error: 'Request not found'
-        });
-      }
-
-
-      res.json({
-        success: true,
-        message:
-          'Request deleted successfully'
-      });
-
-
-    } catch (err) {
-
-      console.error(
-        'DELETE /take-home-requests error:',
-        err
-      );
-
-      res.status(500).json({
-        error: err.message
-      });
-    }
-  }
-);
-
-
-module.exports = router;
+module.exports = router;  
