@@ -90,10 +90,9 @@ router.get('/my-assets', async (req, res) => {
   try {
     const employeeId = getEmployeeId(req);
 
+        // admin / no valid id => no assigned assets (do NOT send 401, it logs the user out)
     if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
-      return res.status(401).json({
-        message: 'Login required to view assigned assets.',
-      });
+      return res.json({ assets: [] });
     }
 
     const assets = await Asset.find({
@@ -120,10 +119,8 @@ router.get('/take-home-requests/my', async (req, res) => {
   try {
     const employeeId = getEmployeeId(req);
 
-    if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
-      return res.status(401).json({
-        message: 'Login required to view your requests.',
-      });
+        if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
+      return res.json({ requests: [] });
     }
 
     const requests = await TakeHomeRequest.find({
@@ -152,8 +149,8 @@ router.post('/take-home-requests', async (req, res) => {
     const employeeId = getEmployeeId(req);
 
     if (!employeeId || !mongoose.Types.ObjectId.isValid(String(employeeId))) {
-      return res.status(401).json({
-        message: 'Login required to submit a request.',
+            return res.status(403).json({
+        message: 'Only employees with assigned assets can submit a request.',
       });
     }
 
